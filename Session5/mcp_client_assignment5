@@ -1,0 +1,263 @@
+import os
+from dotenv import load_dotenv
+from mcp import ClientSession, StdioServerParameters, types
+from mcp.client.stdio import stdio_client
+import asyncio
+import json
+import traceback
+
+from concurrent.futures import TimeoutError
+from functools import partial
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Access your API key and initialize Gemini client correctly
+import openai
+from openai import OpenAI
+
+# Set your API key directly
+openai.api_key = ""
+
+
+client = OpenAI(api_key=openai.api_key)
+
+
+max_iterations = 8
+last_response = None
+iteration = 0
+iteration_response = []
+
+async def generate_with_timeout(client, prompt, timeout=10):
+    """Generate content with a timeout"""
+    print("Starting LLM generation...")
+    try:
+        # Convert the synchronous generate_content call to run in a thread
+        loop = asyncio.get_event_loop()
+        response = await asyncio.wait_for(
+            loop.run_in_executor(
+                None, 
+                lambda: client.chat.completions.create(
+                        model="gpt-3.5-turbo",  # or "gpt-4"
+                        messages=[ {"role": "user", "content": prompt}]
+                    )
+            ),
+            timeout=timeout
+        )
+        print("LLM generation completed")
+        return response
+    except TimeoutError:
+        print("LLM generation timed out!")
+        raise
+    except Exception as e:
+        print(f"Error in LLM generation: {e}")
+        raise
+
+def reset_state():
+    """Reset all global variables to their initial state"""
+    global last_response, iteration, iteration_response
+    last_response = None
+    iteration = 0
+    iteration_response = []
+
+async def main():
+    reset_state()  # Reset at the start of main
+    print("Starting main execution...")
+    try:
+        # Create a single MCP server connection
+        print("Establishing connection to MCP server...")
+        server_params = StdioServerParameters(
+            command="python",
+            args=["mcp_server_updated_assignment5.py"]
+        )
+
+        async with stdio_client(server_params) as (read, write):
+            print("Connection established, creating session...")
+            async with ClientSession(read, write) as session:
+                print("Session created, initializing...")
+                await session.initialize()
+                
+                # Get available tools
+                print("Requesting tool list...")
+                tools_result = await session.list_tools()
+                tools = tools_result.tools
+                print(f"Successfully retrieved {len(tools)} tools")
+
+                # Create system prompt with available tools
+                print("Creating system prompt...")
+                print(f"Number of tools: {len(tools)}")
+                
+                try:
+                    # First, let's inspect what a tool object looks like
+                    # if tools:
+                    #     print(f"First tool properties: {dir(tools[0])}")
+                    #     print(f"First tool example: {tools[0]}")
+                    
+                    tools_description = []
+                    for i, tool in enumerate(tools):
+                        try:
+                            # Get tool properties
+                            params = tool.inputSchema
+                            desc = getattr(tool, 'description', 'No description available')
+                            name = getattr(tool, 'name', f'tool_{i}')
+                            
+                            # Format the input schema in a more readable way
+                            if 'properties' in params:
+                                param_details = []
+                                for param_name, param_info in params['properties'].items():
+                                    param_type = param_info.get('type', 'unknown')
+                                    param_details.append(f"{param_name}: {param_type}")
+                                params_str = ', '.join(param_details)
+                            else:
+                                params_str = 'no parameters'
+
+                            tool_desc = f"{i+1}. {name}({params_str}) - {desc}"
+                            tools_description.append(tool_desc)
+                            print(f"Added description for tool: {tool_desc}")
+                        except Exception as e:
+                            print(f"Error processing tool {i}: {e}")
+                            tools_description.append(f"{i+1}. Error processing tool")
+                    
+                    tools_description = "\n".join(tools_description)
+                    print("Successfully created tools description")
+                except Exception as e:
+                    print(f"Error creating tools description: {e}")
+                    tools_description = "Error loading tools"
+                
+                print("Created system prompt...")
+                
+                
+
+
+                system_prompt = f"""You are a function-calling AI assistant.
+
+Your job is to solve tasks by calling tools step-by-step, validating their inputs and outputs, and arriving at a correct final answer. You must respond with EXACTLY ONE JSON object on a single line (no extra text or explanation).
+
+Available tools:
+{tools_description}
+
+*Response Formats (JSON only):
+
+For function calls:
+{{"type": "FUNCTION_CALL", "tool": "tool_name", "args": {{"arg1": "value1", "arg2": "value2"}}}}
+
+For final answers:
+{{"type": "FINAL_ANSWER", "value": 42}}
+
+If you are unsure what to do or need help:
+{{"type": "FUNCTION_CALL", "tool": "request_human_help", "args": {{"reason": "description of the issue"}}}}
+
+
+*Reasoning & Planning Instructions:
+
+- Think step-by-step before choosing a tool or returning a final answer.
+- Internally tag each step with its reasoning type: "arithmetic", "logic", "lookup", "tool_use", etc.
+- Do not include explanations in your response — only valid JSON.
+
+
+*Tool Input & Output Validation:
+
+Before calling any tool:
+- Validate its inputs using:
+  {{"type": "FUNCTION_CALL", "tool": "validate_inputs", "args": {{"tool_name": "tool_name", "args": {{arguments}}}}}}
+
+After calling any tool:
+- Validate its output using:
+  {{"type": "FUNCTION_CALL", "tool": "validate_tool_response", "args": {{"result": <tool output>}}}}
+
+Before final answer:
+- Use:
+  {{"type": "FUNCTION_CALL", "tool": "validate_final_answer", "args": {{"value": <answer>}}}}
+
+Only proceed if all validations pass. If any validation fails, update your plan or request human help.
+
+
+*Output Format Rules:
+
+- Each response must be a valid JSON object on a single line.
+- Only use the "args" field to pass tool arguments.
+- Do NOT repeat the same function call with identical arguments.
+- Only return a FINAL_ANSWER after completing all reasoning steps.
+
+
+*Tool Usage Strategy:
+
+1. Plan the sequence of tools you will need to solve the problem. 
+2. Validate inputs before each tool call.
+3. Call the tool.
+4. Validate its output.
+5. Use the result in the next step or prepare the final answer.
+6. Validate the final answer before returning it.
+
+"""
+
+
+
+                query = """Complete each step in sequence, validating before proceeding to the next:
+                1. Convert each character in "INDIA" to its ASCII value
+                2. Calculate the exponential of each ASCII value and find their sum
+                3. Start the paint application
+                4. After paint is confirmed open, create a rectangle in the center
+                5. After rectangle is confirmed drawn, place the calculated sum inside it
+                Only provide the final result after confirming all steps are complete."""
+
+                print("Starting iteration loop...")
+                
+                # Use global iteration variables
+                global iteration, last_response
+                
+                previous_responses = set()
+                while iteration < max_iterations:
+                    print(f"\n--- Iteration {iteration} ---")
+                    print("Preparing to generate LLM response...")
+
+                    # Generate LLM response
+                    current_prompt = f"{system_prompt}\n\nTask: {query}"
+                    if iteration_response:
+                        current_prompt += f"\nPrevious actions and results:\n{json.dumps(iteration_response, indent=2)}\nWhat should I do next?"
+
+                    response = await generate_with_timeout(client, current_prompt)
+                    llm_response = response.choices[0].message.content
+                    print("LLM Response:", llm_response)
+
+                    try:
+                        response_json = json.loads(llm_response.strip())
+                        
+                        if response_json["type"] == "FUNCTION_CALL":
+                            tool_name = response_json["tool"]
+                            tool_args = response_json.get("args", {})
+                            
+                            # Execute the tool call
+                            print(f"Executing tool: {tool_name} with args: {tool_args}")
+                            result = await session.call_tool(tool_name, arguments=tool_args)
+                            result_text = result.content[0].text if hasattr(result, 'content') else str(result)
+                            print(f"Tool result: {result_text}")
+                            
+                            # Store the result
+                            iteration_response.append({"tool": tool_name, "args": tool_args, "result": result_text})
+                            
+                        elif response_json["type"] == "FINAL_ANSWER":
+                            print(f"✅ Final Answer: {response_json['value']}")
+                            break
+                            
+                    except json.JSONDecodeError:
+                        print("❌ Invalid JSON response.")
+                        iteration += 1
+                        continue
+                    except Exception as e:
+                        print(f"Error in iteration {iteration}: {str(e)}")
+                        iteration += 1
+                        continue
+
+                    iteration += 1
+
+    except Exception as e:
+        print(f"Error in main execution: {e}")
+        traceback.print_exc()
+    finally:
+        reset_state()  # Reset at the end of main
+
+if __name__ == "__main__":
+    asyncio.run(main())
+    
+    
