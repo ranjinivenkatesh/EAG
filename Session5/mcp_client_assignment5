@@ -23,7 +23,7 @@ openai.api_key = ""
 client = OpenAI(api_key=openai.api_key)
 
 
-max_iterations = 8
+max_iterations = 15
 last_response = None
 iteration = 0
 iteration_response = []
@@ -68,7 +68,7 @@ async def main():
         print("Establishing connection to MCP server...")
         server_params = StdioServerParameters(
             command="python",
-            args=["mcp_server_updated_assignment5.py"]
+            args=["mcp_server_assignment5.py"]
         )
 
         async with stdio_client(server_params) as (read, write):
@@ -129,14 +129,28 @@ async def main():
                 
 
 
-                system_prompt = f"""You are a function-calling AI assistant.
+                system_prompt = f"""You are an AI assistant who will plan, call tool functions and validate the inputs and also outputs.
 
-Your job is to solve tasks by calling tools step-by-step, validating their inputs and outputs, and arriving at a correct final answer. You must respond with EXACTLY ONE JSON object on a single line (no extra text or explanation).
+-Your job is to solve tasks by calling tools step-by-step, validating their inputs and outputs, and arriving at a correct final answer.
+-You must respond with EXACTLY ONE JSON object on a single line (no extra text or explanation).
+-You MUST call `validate_inputs` before every tool call, and `validate_tool_response` after, even if the tool appears safe.
+-All tool function calls must be preceded by 'validate_inputs' tool and succeded by 'validate_tool_response'
+-Follow  Tool Usage Example instruction for all planned steps
 
 Available tools:
 {tools_description}
 
-*Response Formats (JSON only):
+---
+Plan:
+- Plan in first iteration and it can max extend to 2nd iteration
+- No planning beyond 2nd iteration in entire execution. 
+- You emit a plan using below format:
+  {{ "type": "PLAN", "steps": ["description 1", "description 2"] }}
+- Plan to consists of input validation of tool function, function and output validation of tool response in sequence
+- Clear cut plan on what tool function will be called in each iteration
+- Execution should be exactly as per plan
+
+✅ Response Formats (JSON only):
 
 For function calls:
 {{"type": "FUNCTION_CALL", "tool": "tool_name", "args": {{"arg1": "value1", "arg2": "value2"}}}}
@@ -144,62 +158,71 @@ For function calls:
 For final answers:
 {{"type": "FINAL_ANSWER", "value": 42}}
 
-If you are unsure what to do or need help:
+If you are unsure or validation fails:
 {{"type": "FUNCTION_CALL", "tool": "request_human_help", "args": {{"reason": "description of the issue"}}}}
 
+---
 
-*Reasoning & Planning Instructions:
+✅ Tool Usage Example (Follow this pattern without fail. Any change is a violation):
 
-- Think step-by-step before choosing a tool or returning a final answer.
-- Internally tag each step with its reasoning type: "arithmetic", "logic", "lookup", "tool_use", etc.
-- Do not include explanations in your response — only valid JSON.
+1. Validate inputs:
+{{"type": "FUNCTION_CALL", "tool": "validate_inputs", "args": {{"tool_name": "add", "args": {{"a": 5, "b": 3}}}}}}
+
+2. Call the tool:
+{{"type": "FUNCTION_CALL", "tool": "add", "args": {{"a": 5, "b": 3}}}}
+
+3. Validate the output:
+{{"type": "FUNCTION_CALL", "tool": "validate_tool_response", "args": {{"result": {{"content": [{{"text": "8"}}]}}}}}}
+
+4. Return final answer:
+{{"type": "FUNCTION_CALL", "tool": "validate_final_answer", "args": {{"value": 8}}}}
+
+Then:
+{{"type": "FINAL_ANSWER", "value": 8}}
 
 
-*Tool Input & Output Validation:
+✅ Reasoning 
+
+- There should be only one json response for iteration. 
+
+---
+
+✅ Validation Steps (MANDATORY):
 
 Before calling any tool:
-- Validate its inputs using:
-  {{"type": "FUNCTION_CALL", "tool": "validate_inputs", "args": {{"tool_name": "tool_name", "args": {{arguments}}}}}}
+{{"type": "FUNCTION_CALL", "tool": "validate_inputs", "args": {{"tool_name": "tool_name", "args": {{arguments}}}}}}
 
 After calling any tool:
-- Validate its output using:
-  {{"type": "FUNCTION_CALL", "tool": "validate_tool_response", "args": {{"result": <tool output>}}}}
+{{"type": "FUNCTION_CALL", "tool": "validate_tool_response", "args": {{"result": <tool_output>}}}}
 
-Before final answer:
-- Use:
-  {{"type": "FUNCTION_CALL", "tool": "validate_final_answer", "args": {{"value": <answer>}}}}
+Before returning the final answer:
+{{"type": "FUNCTION_CALL", "tool": "validate_final_answer", "args": {{"value": <answer>}}}}
 
-Only proceed if all validations pass. If any validation fails, update your plan or request human help.
+Only continue if validation passes.
 
+---
 
-*Output Format Rules:
+✅ Output Format Rules:
 
 - Each response must be a valid JSON object on a single line.
-- Only use the "args" field to pass tool arguments.
-- Do NOT repeat the same function call with identical arguments.
-- Only return a FINAL_ANSWER after completing all reasoning steps.
+- Do NOT repeat the same tool call with the same arguments.
+- Only return a FINAL_ANSWER after all steps and validations.
 
-
-*Tool Usage Strategy:
-
-1. Plan the sequence of tools you will need to solve the problem. 
-2. Validate inputs before each tool call.
-3. Call the tool.
-4. Validate its output.
-5. Use the result in the next step or prepare the final answer.
-6. Validate the final answer before returning it.
-
+---
+Always follow this structured reasoning and call sequence.
 """
+
+
 
 
 
                 query = """Complete each step in sequence, validating before proceeding to the next:
                 1. Convert each character in "INDIA" to its ASCII value
-                2. Calculate the exponential of each ASCII value and find their sum
+                2. Calculate the exponential of each ASCII value and find their sum which is the final answer
                 3. Start the paint application
                 4. After paint is confirmed open, create a rectangle in the center
                 5. After rectangle is confirmed drawn, place the calculated sum inside it
-                Only provide the final result after confirming all steps are complete."""
+                6. Validation of inputs and outputs is a must"""
 
                 print("Starting iteration loop...")
                 
