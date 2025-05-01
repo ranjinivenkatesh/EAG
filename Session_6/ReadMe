@@ -1,0 +1,12 @@
+Assignment -6:
+
+Goal of this Assignment is to have a layered architecture for the AI agent.
+Single File of Client has now been modified to have a layered architecture.
+1. Main - Framework for entire flow
+2. Perception - To request the LLM to understand the requirement and give the response.
+   
+3. Decision - Based on the response from Perception, decide what needs to be done by interpreting the response 
+               from Perception
+4. Memory: Need to update the memory based on the decision of LLM Response
+5. Action : Take the required action based on the decision ( Call the respective tool) 
+6. Util: Utility related to functionality like parsing, validation of schema etc..
